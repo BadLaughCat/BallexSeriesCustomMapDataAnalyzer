@@ -18,7 +18,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const DIR = `D:\Steam\steamapps\workshop\content\1383570\3748466204`
+const DIR = `D:\Steam\steamapps\workshop\content\1383570\3039373732`
 
 func main() {
 	entries, _ := os.ReadDir(DIR)

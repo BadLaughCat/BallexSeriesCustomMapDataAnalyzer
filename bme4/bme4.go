@@ -1,6 +1,7 @@
 package bme4
 
 import (
+	"BallexSeriesCustomMapDataAnalyzer/ballex2"
 	"BallexSeriesCustomMapDataAnalyzer/util"
 	"bytes"
 	"encoding/binary"
@@ -40,8 +41,9 @@ const (
 )
 
 type BMS struct {
-	BMSInfo  BMSInfo
-	BMSItems []BMSItem
+	BMSInfo   BMSInfo
+	BMSItems  []BMSItem
+	BMSAssets []BMSAsset
 }
 
 type BMSInfo struct {
@@ -96,6 +98,25 @@ type ItemData struct {
 	StringArrayDictionary map[string][]string
 	VectorDictionary      map[string][4]float32
 	VectorArrayDictionary map[string][][4]float32
+}
+
+type BMSAsset struct {
+	Name             string
+	AssetType        uint64
+	IsBuiltInAsset   bool
+	BuiltInAssetLink string
+	AssetData        any
+}
+
+type MushMaterialAsset struct {
+	Albedo, Normal, Mask                   string
+	GlobalUV                               bool
+	TilingScale, TilingOffset, TilingSpeed [2]float32
+	EmissionColor                          [4]float32
+	Metallic, Smoothness, AO               float32
+	TransparencyType                       int32
+	BlendMode                              int32
+	MaterialType                           int32
 }
 
 func ReadBME4MapData(raw []byte) {
@@ -281,7 +302,13 @@ func ReadBME4MapData(raw []byte) {
 					item.ItemData.FloatArrayDictionary[key] = tmp
 					reader.Seek(2, io.SeekCurrent)
 				case `doubleArrayDictionary`:
-					item.ItemData.DoubleArrayDictionary = make(map[string][]float64, count)
+					readType()
+					reader.Seek(5, io.SeekCurrent)
+					tmp := make([]float64, util.Read[int32](reader))
+					reader.Seek(4, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &tmp)
+					item.ItemData.DoubleArrayDictionary[key] = tmp
+					reader.Seek(2, io.SeekCurrent)
 				case `boolDictionary`:
 					item.ItemData.BoolDictionary[key] = util.Read[bool](reader)
 					reader.Seek(1, io.SeekCurrent)
@@ -350,6 +377,219 @@ func ReadBME4MapData(raw []byte) {
 			binary.Read(reader, binary.LittleEndian, &item.Template)
 			reader.Seek(1, io.SeekCurrent)
 		}
+	}
+	reader.Seek(209, io.SeekCurrent)
+	bms.BMSAssets = make([]BMSAsset, util.Read[uint64](reader))
+	for i := range bms.BMSAssets {
+		fmt.Println(`资源`, i, `位于`, reader.Size()-int64(reader.Len()))
+		asset := &bms.BMSAssets[i]
+		reader.Seek(1, io.SeekCurrent)
+		readType()
+		reader.Seek(18, io.SeekCurrent)
+		asset.Name = util.ReadString(reader)
+		reader.Seek(24, io.SeekCurrent)
+		binary.Read(reader, binary.LittleEndian, &asset.AssetType)
+		tmp, _ := reader.ReadByte()
+		reader.Seek(23, io.SeekCurrent)
+		if tmp == 1 {
+			readType()
+			switch asset.AssetType {
+			case 2:
+				texture := MushTextureAsset{}
+				reader.Seek(34, io.SeekCurrent)
+				readType()
+				reader.Seek(20, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &texture.Width)
+				reader.Seek(18, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &texture.Height)
+				reader.Seek(14, io.SeekCurrent)
+				readType()
+				reader.Seek(5, io.SeekCurrent)
+				texture.Data = make([]byte, util.Read[int32](reader))
+				reader.Seek(4, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &texture.Data)
+				reader.Seek(3, io.SeekCurrent)
+				asset.AssetData = texture
+			case 3:
+				mesh := ballex2.MushMeshAsset{}
+				reader.Seek(28, io.SeekCurrent)
+				readType()
+				reader.Seek(26, io.SeekCurrent)
+				readType()
+				reader.Seek(5, io.SeekCurrent)
+				mesh.Vertices = make([][3]float32, util.Read[uint64](reader))
+				reader.Seek(1, io.SeekCurrent)
+				readType()
+				for i := range mesh.Vertices {
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Vertices[i][0])
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Vertices[i][1])
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Vertices[i][2])
+					reader.Seek(3, io.SeekCurrent)
+					if i != len(mesh.Vertices)-1 {
+						reader.Seek(4, io.SeekCurrent)
+					}
+				}
+				reader.Seek(42, io.SeekCurrent)
+				readType()
+				reader.Seek(5, io.SeekCurrent)
+				mesh.SubMeshDescriptors = make([]ballex2.MushMeshDescriptor, util.Read[uint64](reader))
+				reader.Seek(1, io.SeekCurrent)
+				readType()
+				for i := range mesh.SubMeshDescriptors {
+					reader.Seek(30, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.SubMeshDescriptors[i].IndexStart)
+					reader.Seek(26, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.SubMeshDescriptors[i].IndexCount)
+					reader.Seek(38, io.SeekCurrent)
+					readType()
+					reader.Seek(5, io.SeekCurrent)
+					theTriangles := &mesh.SubMeshDescriptors[i].SubMeshTriangles
+					*theTriangles = make([]int32, util.Read[uint64](reader))
+					for k := range *theTriangles {
+						reader.Seek(1, io.SeekCurrent)
+						binary.Read(reader, binary.LittleEndian, &(*theTriangles)[k])
+					}
+					reader.Seek(32, io.SeekCurrent)
+					theIndices := &mesh.SubMeshDescriptors[i].Indices
+					*theIndices = make([]int32, util.Read[uint64](reader))
+					for k := range *theIndices {
+						reader.Seek(1, io.SeekCurrent)
+						binary.Read(reader, binary.LittleEndian, &(*theIndices)[k])
+					}
+					if i != len(mesh.SubMeshDescriptors)-1 {
+						reader.Seek(9, io.SeekCurrent)
+					}
+				}
+				reader.Seek(17, io.SeekCurrent)
+				readType()
+				reader.Seek(5, io.SeekCurrent)
+				mesh.UVs = make([][2]float32, util.Read[uint64](reader))
+				reader.Seek(1, io.SeekCurrent)
+				readType()
+				for i := range mesh.UVs {
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.UVs[i][0])
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.UVs[i][1])
+					reader.Seek(3, io.SeekCurrent)
+					if i != len(mesh.UVs)-1 {
+						reader.Seek(4, io.SeekCurrent)
+					}
+				}
+				reader.Seek(30, io.SeekCurrent)
+				mesh.Normals = make([][3]float32, util.Read[uint64](reader))
+				reader.Seek(6, io.SeekCurrent)
+				for i := range mesh.Normals {
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Normals[i][0])
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Normals[i][1])
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Normals[i][2])
+					reader.Seek(3, io.SeekCurrent)
+					if i != len(mesh.Normals)-1 {
+						reader.Seek(4, io.SeekCurrent)
+					}
+				}
+				reader.Seek(22, io.SeekCurrent)
+				readType()
+				reader.Seek(5, io.SeekCurrent)
+				mesh.Tangents = make([][4]float32, util.Read[uint64](reader))
+				reader.Seek(1, io.SeekCurrent)
+				readType()
+				for i := range mesh.Tangents {
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Tangents[i][0])
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Tangents[i][1])
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Tangents[i][2])
+					reader.Seek(1, io.SeekCurrent)
+					binary.Read(reader, binary.LittleEndian, &mesh.Tangents[i][3])
+					reader.Seek(3, io.SeekCurrent)
+					if i != len(mesh.Tangents)-1 {
+						reader.Seek(4, io.SeekCurrent)
+					}
+				}
+				reader.Seek(2, io.SeekCurrent)
+				asset.AssetData = mesh
+			case 4:
+				material := MushMaterialAsset{}
+				reader.Seek(44, io.SeekCurrent)
+				readType()
+				reader.Seek(4, io.SeekCurrent)
+				material.Albedo = util.ReadNullOrStringEntry(reader)
+				material.Normal = util.ReadNullOrStringEntry(reader)
+				material.Mask = util.ReadNullOrStringEntry(reader)
+				reader.Seek(22, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.GlobalUV)
+				reader.Seek(28, io.SeekCurrent)
+				readType()
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.TilingScale[0])
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.TilingScale[1])
+				reader.Seek(31, io.SeekCurrent)
+				readType()
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.TilingOffset[0])
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.TilingOffset[1])
+				reader.Seek(29, io.SeekCurrent)
+				readType()
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.TilingSpeed[0])
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.TilingSpeed[1])
+				reader.Seek(33, io.SeekCurrent)
+				readType()
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.EmissionColor[0])
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.EmissionColor[1])
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.EmissionColor[2])
+				reader.Seek(1, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.EmissionColor[3])
+				reader.Seek(23, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.Metallic)
+				reader.Seek(26, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.Smoothness)
+				reader.Seek(10, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.AO)
+				reader.Seek(38, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.TransparencyType)
+				reader.Seek(24, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.BlendMode)
+				reader.Seek(30, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &material.MaterialType)
+				reader.Seek(2, io.SeekCurrent)
+				asset.AssetData = material
+			case 5:
+				reader.Seek(30, io.SeekCurrent)
+				readType()
+				reader.Seek(18, io.SeekCurrent)
+				readType()
+				reader.Seek(5, io.SeekCurrent)
+				audioBytes := make([]byte, util.Read[int32](reader))
+				reader.Seek(4, io.SeekCurrent)
+				binary.Read(reader, binary.LittleEndian, &audioBytes)
+				reader.Seek(3, io.SeekCurrent)
+				asset.AssetData = audioBytes
+			}
+		}
+		if i == 17 {
+			fmt.Println()
+		}
+		reader.Seek(34, io.SeekCurrent)
+		binary.Read(reader, binary.LittleEndian, &asset.IsBuiltInAsset)
+		asset.BuiltInAssetLink = util.ReadNullOrStringEntry(reader)
+		reader.Seek(1, io.SeekCurrent)
+		// pos := reader.Size() - int64(reader.Len())
+		// fmt.Println(pos)
 	}
 	fmt.Println(`我去！程序顺利结束了，没有崩！打断点看结构体信息吧`)
 }
